@@ -1,1 +1,1 @@
-First, compile the code with the command `g++ -O3 -pthread inflation.cpp -o billiard`. Then, start a web server with `python3 -m http.server 8000`, and run the program with `./billiard`. Press start visualization to visualize the packing process.
+First, compile the code with the command `g++ -O3 -pthread inflation.cpp -o billiard`. Run the program with command `./billiard <n> <log file>` to find a packing. Then, start a web server with `python3 -m http.server 8000`, and view the log from http://localhost:8000/. 

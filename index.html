@@ -1,129 +1,456 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Billiard of Squares</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Square Configuration Visualization</title>
     <style>
-        canvas { border: 1px solid #333; }
-        .controls { margin: 20px; padding: 15px; background: #f5f5f5; }
-        .param-group { margin: 10px 0; }
-        label { margin-right: 15px; }
-        input { width: 80px; margin-right: 20px; }
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            overflow-y: auto;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            max-height: 100vh;
+        }
+        #info {
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-bottom: 1px solid #ddd;
+            flex-shrink: 0;
+            display: flex;
+            flex-wrap: wrap;
+        }
+        #info p {
+            margin: 0 20px 0 0;
+        }
+        #canvas-container {
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #f0f0f0;
+            overflow: hidden;
+            min-height: 300px;
+        }
+        canvas {
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .controls {
+            padding: 15px;
+            background-color: #eee;
+            border-top: 1px solid #ddd;
+            flex-shrink: 0;
+        }
+        .input-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .input-group label {
+            margin-right: 10px;
+            min-width: 100px;
+        }
+        input[type="text"] {
+            flex-grow: 1;
+            padding: 5px;
+            margin-right: 10px;
+            max-width: 400px;
+        }
+        button {
+            padding: 5px 10px;
+            margin-right: 5px;
+            cursor: pointer;
+        }
+        .slider-container {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+        }
+        .slider-container label {
+            margin-right: 10px;
+            min-width: 150px;
+        }
+        input[type="range"] {
+            flex-grow: 1;
+            max-width: 400px;
+        }
+        .value-display {
+            width: 50px;
+            text-align: right;
+            margin-left: 10px;
+        }
+        /* Subscript styling */
+        sub {
+            font-size: 0.8em;
+            vertical-align: sub;
+        }
     </style>
 </head>
 <body>
-    <div class="controls">
-        <div class="param-group">
-            <button onclick="startVisualization()">Start Visualization</button>
-            <button onclick="stopVisualization()">Stop</button>
+    <div class="container">
+        <div id="info">
+            <p>Log file: <span id="filename">None</span></p>
+            <p>Current state: <span id="current-state">0</span> of <span id="total-states">0</span></p>
+            <p>s<sub>n</sub>: <span id="s-n-value">0</span></p>
         </div>
-        <div class="param-group">
-            <label>Update Interval (ms): <input type="number" id="interval" value="200"></label>
+        
+        <div id="canvas-container">
+            <canvas id="canvas" width="800" height="600"></canvas>
+        </div>
+        
+        <div class="controls">
+            <div class="input-group">
+                <label for="logfilename">Log File:</label>
+                <input type="text" id="logfilename" value="billiard.log" placeholder="Enter log file name">
+                <button id="load">Load</button>
+            </div>
+            <div>
+                <button id="prev">Previous</button>
+                <button id="next">Next</button>
+                <button id="play">Play</button>
+                <button id="pause">Pause</button>
+                <button id="reset">Reset</button>
+            </div>
+            <div class="slider-container">
+                <label for="stateSlider">Current State:</label>
+                <input type="range" id="stateSlider" min="0" max="0" value="0">
+                <span id="stateValue" class="value-display">0</span>
+            </div>
+            <div class="slider-container">
+                <label for="speedSlider">Animation Speed:</label>
+                <input type="range" id="speedSlider" min="1" max="20" value="5">
+                <span id="speedValue" class="value-display">5</span>
+            </div>
         </div>
     </div>
-    <canvas id="canvas"></canvas>
 
     <script>
-        let animationId = null;
-        let scale = 1;
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
-        
-        function resizeCanvas() {
-            canvas.width = window.innerWidth * 0.8;
-            canvas.height = window.innerHeight * 0.7;
+        const logFilenameInput = document.getElementById('logfilename');
+        const loadButton = document.getElementById('load');
+        const prevButton = document.getElementById('prev');
+        const nextButton = document.getElementById('next');
+        const playButton = document.getElementById('play');
+        const pauseButton = document.getElementById('pause');
+        const resetButton = document.getElementById('reset');
+        const stateSlider = document.getElementById('stateSlider');
+        const speedSlider = document.getElementById('speedSlider');
+        const stateValueDisplay = document.getElementById('stateValue');
+        const speedValueDisplay = document.getElementById('speedValue');
+        const fileNameDisplay = document.getElementById('filename');
+        const currentStateDisplay = document.getElementById('current-state');
+        const totalStatesDisplay = document.getElementById('total-states');
+        const sNValueDisplay = document.getElementById('s-n-value');
+        const canvasContainer = document.getElementById('canvas-container');
+
+        let states = [];
+        let currentStateIndex = 0;
+        let animationId = null;
+        let playSpeed = parseInt(speedSlider.value);
+        let autoZoom = true;
+        let isPlaying = false;
+
+        // Set initial canvas size properly
+        resizeCanvas();
+
+        // Initially disable pause button
+        pauseButton.disabled = true;
+
+        // Event listeners
+        loadButton.addEventListener('click', loadLogFile);
+        logFilenameInput.addEventListener('keyup', function(event) {
+            if (event.key === 'Enter') {
+                loadLogFile();
+            }
+        });
+        prevButton.addEventListener('click', showPreviousState);
+        nextButton.addEventListener('click', showNextState);
+        playButton.addEventListener('click', startPlay);
+        pauseButton.addEventListener('click', pausePlay);
+        resetButton.addEventListener('click', resetView);
+        stateSlider.addEventListener('input', function() {
+            currentStateIndex = parseInt(this.value);
+            stateValueDisplay.textContent = currentStateIndex;
+            drawCurrentState();
+        });
+        speedSlider.addEventListener('input', function() {
+            playSpeed = parseInt(this.value);
+            speedValueDisplay.textContent = playSpeed;
+        });
+
+        // Initial setup
+        resetView();
+
+        function loadLogFile() {
+            const filename = logFilenameInput.value.trim();
+            if (!filename) {
+                alert("Please enter a log file name");
+                return;
+            }
+            
+            fileNameDisplay.textContent = filename;
+            
+            fetch(filename)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to load file: ${response.status} ${response.statusText}`);
+                    }
+                    return response.text();
+                })
+                .then(content => {
+                    parseLogFile(content);
+                })
+                .catch(error => {
+                    console.error("Error loading file:", error);
+                    alert(`Error loading file: ${error.message}`);
+                });
         }
 
-        function drawSquare(x, y, angle, sideLength) {
-            ctx.save();
-            // Convert coordinates to canvas system (Y-down)
-            const canvasX = canvas.width/2 + x * scale;
-            const canvasY = canvas.height/2 - y * scale;
-            
-            ctx.translate(canvasX, canvasY);
-            ctx.rotate(angle + Math.PI/4);  // Correct rotation direction
-            
-            // Draw square centered at (0,0) with proper side length
-            ctx.strokeStyle = '#2c3e50';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(-sideLength/2, -sideLength/2, sideLength, sideLength);
-            
-            ctx.restore();
-        }
-
-        function updateVisualization(data) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Calculate side length based on current inflation
-            const sideLength = Math.sqrt(2) * data.max_inflation * scale;
-            
-            // Draw boundary
-            ctx.strokeStyle = '#e74c3c';
-            ctx.strokeRect(
-                canvas.width/2 - data.L*scale,
-                canvas.height/2 - data.L*scale,
-                data.L*scale*2,
-                data.L*scale*2
-            );
-            
-            // Draw squares with correct size and orientation
-            data.squares.forEach(sq => {
-                drawSquare(sq[0], sq[1], sq[2], sideLength);
-            });
-            
-            // Draw info text
-            ctx.fillStyle = '#000';
-            ctx.font = '14px Arial';
-            ctx.fillText(`Max Inflation: ${data.max_inflation.toFixed(2)}`, 10, 20);
-            ctx.fillText(`Square Size: ${(Math.sqrt(2)*data.L/data.max_inflation).toFixed(2)}`, 10, 40);
-        }
-
-        async function checkForUpdates() {
+        function parseLogFile(content) {
             try {
-                const response = await fetch('billiard.log');
-                const text = await response.text();
-                const lines = text.trim().split('\n');
+                // Split the content by new lines and parse each line as JSON
+                states = content.split('\n')
+                    .filter(line => line.trim().length > 0)
+                    .map(line => JSON.parse(line));
                 
-                if (lines.length > 0) {
-                    const lastLine = lines[lines.length - 1];
-                    const data = JSON.parse(lastLine);
-                    
-                    // Calculate scale to maintain visible boundary
-                    scale = Math.min(
-                        canvas.width / (data.L * 2 * 1.2),  // 20% padding
-                        canvas.height / (data.L * 2 * 1.2)
-                    );
-                    
-                    updateVisualization(data);
+                if (states.length === 0) {
+                    throw new Error("No valid data found in the log file");
                 }
+                
+                currentStateIndex = 0;
+                totalStatesDisplay.textContent = states.length;
+                stateSlider.max = states.length - 1;
+                stateSlider.value = 0;
+                stateValueDisplay.textContent = "0";
+                
+                drawCurrentState();
             } catch (error) {
-                console.error('Error fetching data:', error);
+                console.error("Error parsing log file:", error);
+                alert(`Error parsing log file: ${error.message}`);
+            }
+        }
+
+        function getOptimalZoomLevel(L) {
+            // Calculate optimal zoom to fit the boundary box with some padding
+            const padding = 0.1; // 10% padding
+            const containerWidth = canvas.width;
+            const containerHeight = canvas.height;
+            
+            // We want 2*L to fit within the smallest dimension with padding
+            const smallestDimension = Math.min(containerWidth, containerHeight);
+            const zoomLevel = smallestDimension / (2 * L * 200 * (1 + padding));
+            
+            return zoomLevel;
+        }
+
+        function drawCurrentState() {
+            if (states.length === 0 || currentStateIndex >= states.length) {
+                return;
             }
             
-            if (animationId !== null) {
-                animationId = setTimeout(() => {
-                    requestAnimationFrame(checkForUpdates);
-                }, document.getElementById('interval').value);
+            const state = states[currentStateIndex];
+            currentStateDisplay.textContent = currentStateIndex + 1;
+            
+            // Calculate and update s_n = sqrt(2) * L / max_inflation
+            const sn = (Math.sqrt(2) * state.L) / state.max_inflation;
+            sNValueDisplay.textContent = sn.toFixed(6);
+            
+            // Calculate optimal zoom level if auto-zoom is enabled
+            let zoomLevel = 1;
+            if (autoZoom && state.L) {
+                zoomLevel = getOptimalZoomLevel(state.L);
+            }
+            
+            clearCanvas();
+            drawBoundingBox(state.L, zoomLevel);
+            drawSquares(state.squares, state.max_inflation, zoomLevel);
+        }
+
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function drawBoundingBox(L, zoomLevel) {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const boxSize = 2 * L * zoomLevel * 200; // Scale the box
+            
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 1; // Same line thickness as squares
+            ctx.strokeRect(centerX - boxSize/2, centerY - boxSize/2, boxSize, boxSize);
+        }
+
+        function drawSquares(squares, maxInflation, zoomLevel) {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const scale = zoomLevel * 200; // Pixels per unit
+            
+            // Set square size based on max_inflation
+            const squareSize = Math.sqrt(2) * maxInflation;
+            
+            squares.forEach((square) => {
+                const [x, y, theta] = square;
+                
+                // Adjust the angle by adding pi/4 as specified
+                const adjustedTheta = theta + Math.PI / 4;
+                
+                // Calculate the screen position
+                const screenX = centerX + x * scale;
+                const screenY = centerY - y * scale; // Flip Y since canvas Y grows downward
+                
+                // Draw the square
+                ctx.save();
+                ctx.translate(screenX, screenY);
+                ctx.rotate(-adjustedTheta); // Negative because canvas rotations are clockwise
+                
+                const halfSize = (squareSize * scale) / 2;
+                
+                // Use light gray for all squares
+                ctx.fillStyle = '#D3D3D3';
+                ctx.fillRect(-halfSize, -halfSize, squareSize * scale, squareSize * scale);
+                
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(-halfSize, -halfSize, squareSize * scale, squareSize * scale);
+                
+                ctx.restore();
+            });
+        }
+
+        function showPreviousState() {
+            if (currentStateIndex > 0) {
+                currentStateIndex--;
+                stateSlider.value = currentStateIndex;
+                stateValueDisplay.textContent = currentStateIndex;
+                drawCurrentState();
             }
         }
 
-        // Rest of the code remains the same as previous version
-        function startVisualization() {
-            if (animationId === null) {
-                resizeCanvas();
-                animationId = requestAnimationFrame(checkForUpdates);
+        function showNextState() {
+            if (currentStateIndex < states.length - 1) {
+                currentStateIndex++;
+                stateSlider.value = currentStateIndex;
+                stateValueDisplay.textContent = currentStateIndex;
+                drawCurrentState();
             }
         }
 
-        function stopVisualization() {
-            if (animationId !== null) {
+        function startPlay() {
+            if (isPlaying) return;
+            
+            isPlaying = true;
+            playButton.disabled = true;
+            pauseButton.disabled = false;
+            
+            animate();
+        }
+
+        function pausePlay() {
+            if (!isPlaying) return;
+            
+            isPlaying = false;
+            playButton.disabled = false;
+            pauseButton.disabled = true;
+            
+            if (animationId) {
                 cancelAnimationFrame(animationId);
                 animationId = null;
             }
         }
 
-        // Initial setup
-        resizeCanvas();
+        function animate() {
+            if (!isPlaying) return;
+            
+            if (currentStateIndex < states.length - 1) {
+                // Use setTimeout for controlled speed
+                setTimeout(() => {
+                    currentStateIndex++;
+                    stateSlider.value = currentStateIndex;
+                    stateValueDisplay.textContent = currentStateIndex;
+                    drawCurrentState();
+                    
+                    if (isPlaying) {
+                        animationId = requestAnimationFrame(animate);
+                    }
+                }, 1000 / playSpeed); // Adjust speed
+            } else {
+                // End of animation
+                isPlaying = false;
+                playButton.disabled = false;
+                pauseButton.disabled = true;
+                animationId = null;
+            }
+        }
+
+        function resetView() {
+            currentStateIndex = 0;
+            stateSlider.value = 0;
+            stateValueDisplay.textContent = "0";
+            playSpeed = 5;
+            speedSlider.value = 5;
+            speedValueDisplay.textContent = "5";
+            
+            isPlaying = false;
+            
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            
+            // Reset button states
+            playButton.disabled = false;
+            pauseButton.disabled = true;
+            
+            clearCanvas();
+            drawInitialMessage();
+        }
+
+        function drawInitialMessage() {
+            clearCanvas();
+            ctx.font = '20px Arial';
+            ctx.fillStyle = 'gray';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('Enter a log file name and click Load', canvas.width/2, canvas.height/2);
+        }
+
+        function resizeCanvas() {
+            // Make the canvas fit the container while maintaining aspect ratio
+            const containerWidth = canvasContainer.clientWidth;
+            const containerHeight = canvasContainer.clientHeight;
+            
+            // Choose dimensions to fit in the container
+            const aspectRatio = 4/3;
+            let width, height;
+            
+            if (containerWidth / containerHeight > aspectRatio) {
+                // Container is wider than needed
+                height = Math.min(containerHeight, 600);
+                width = height * aspectRatio;
+            } else {
+                // Container is taller than needed
+                width = Math.min(containerWidth, 800);
+                height = width / aspectRatio;
+            }
+            
+            canvas.width = width;
+            canvas.height = height;
+            
+            drawCurrentState();
+        }
+
+        // Resize canvas when window resizes
         window.addEventListener('resize', resizeCanvas);
+
+        // Draw initial message
+        drawInitialMessage();
     </script>
 </body>
 </html>

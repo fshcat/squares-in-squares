@@ -174,6 +174,7 @@ public:
                 new_max_inflation = min(new_max_inflation, pair_inflations[i][j]);
             }
         }
+        
         // Merge with existing max_inflation
         max_inflation = min(max_inflation, new_max_inflation);
     }
@@ -364,8 +365,6 @@ void billiard_of_squares(Configuration& C, double eps_init, double eps_min,
 
     while (epsilon > eps_min)
     {
-        this_thread::sleep_for(chrono::milliseconds(100));
-
         double old_inflation = C.max_inflation;
         random_walking(C, num_attempts, epsilon);
 
@@ -388,14 +387,15 @@ void log_squares(Configuration& C)
     }
 }
 
-int main()
+int main(int argc, char* argv[])
 {
-    int n = 11;
+    int n = stoi(argv[1]); 
+    string logfile = argv[2];
+
     double L = 1.0;
     Configuration init(n, L);
 
-    // Example usage; writes updates to "billiard.log"
-    billiard_of_squares(init, 0.1, 1e-8, 1.0, 1000, "billiard.log");
+    billiard_of_squares(init, 0.1, 1e-8, 1.0, 1000, logfile);
 
     return 0;
 }
