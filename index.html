@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Billiard of Squares</title>
+    <style>
+        canvas { border: 1px solid #333; }
+        .controls { margin: 20px; padding: 15px; background: #f5f5f5; }
+        .param-group { margin: 10px 0; }
+        label { margin-right: 15px; }
+        input { width: 80px; margin-right: 20px; }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <div class="param-group">
+            <button onclick="startVisualization()">Start Visualization</button>
+            <button onclick="stopVisualization()">Stop</button>
+        </div>
+        <div class="param-group">
+            <label>Update Interval (ms): <input type="number" id="interval" value="200"></label>
+        </div>
+    </div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        let animationId = null;
+        let scale = 1;
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resizeCanvas() {
+            canvas.width = window.innerWidth * 0.8;
+            canvas.height = window.innerHeight * 0.7;
+        }
+
+        function drawSquare(x, y, angle, sideLength) {
+            ctx.save();
+            // Convert coordinates to canvas system (Y-down)
+            const canvasX = canvas.width/2 + x * scale;
+            const canvasY = canvas.height/2 - y * scale;
+            
+            ctx.translate(canvasX, canvasY);
+            ctx.rotate(angle + Math.PI/4);  // Correct rotation direction
+            
+            // Draw square centered at (0,0) with proper side length
+            ctx.strokeStyle = '#2c3e50';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(-sideLength/2, -sideLength/2, sideLength, sideLength);
+            
+            ctx.restore();
+        }
+
+        function updateVisualization(data) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Calculate side length based on current inflation
+            const sideLength = Math.sqrt(2) * data.max_inflation * scale;
+            
+            // Draw boundary
+            ctx.strokeStyle = '#e74c3c';
+            ctx.strokeRect(
+                canvas.width/2 - data.L*scale,
+                canvas.height/2 - data.L*scale,
+                data.L*scale*2,
+                data.L*scale*2
+            );
+            
+            // Draw squares with correct size and orientation
+            data.squares.forEach(sq => {
+                drawSquare(sq[0], sq[1], sq[2], sideLength);
+            });
+            
+            // Draw info text
+            ctx.fillStyle = '#000';
+            ctx.font = '14px Arial';
+            ctx.fillText(`Max Inflation: ${data.max_inflation.toFixed(2)}`, 10, 20);
+            ctx.fillText(`Square Size: ${(Math.sqrt(2)*data.L/data.max_inflation).toFixed(2)}`, 10, 40);
+        }
+
+        async function checkForUpdates() {
+            try {
+                const response = await fetch('billiard.log');
+                const text = await response.text();
+                const lines = text.trim().split('\n');
+                
+                if (lines.length > 0) {
+                    const lastLine = lines[lines.length - 1];
+                    const data = JSON.parse(lastLine);
+                    
+                    // Calculate scale to maintain visible boundary
+                    scale = Math.min(
+                        canvas.width / (data.L * 2 * 1.2),  // 20% padding
+                        canvas.height / (data.L * 2 * 1.2)
+                    );
+                    
+                    updateVisualization(data);
+                }
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            }
+            
+            if (animationId !== null) {
+                animationId = setTimeout(() => {
+                    requestAnimationFrame(checkForUpdates);
+                }, document.getElementById('interval').value);
+            }
+        }
+
+        // Rest of the code remains the same as previous version
+        function startVisualization() {
+            if (animationId === null) {
+                resizeCanvas();
+                animationId = requestAnimationFrame(checkForUpdates);
+            }
+        }
+
+        function stopVisualization() {
+            if (animationId !== null) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+        }
+
+        // Initial setup
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+    </script>
+</body>
+</html>
