@@ -90,14 +90,81 @@
             font-size: 0.8em;
             vertical-align: sub;
         }
+        #precision-control {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+        }
+        #precision-control label {
+            margin-right: 10px;
+            min-width: 150px;
+        }
+        /* Value displays with higher precision */
+        .numeric-value {
+            font-family: 'Courier New', monospace;
+            font-size: 0.95em;
+        }
+        /* Info box enhancements */
+        .data-group {
+            border-left: 3px solid #ccc;
+            padding-left: 10px;
+            margin-right: 20px;
+        }
+        .data-label {
+            font-weight: bold;
+            color: #555;
+        }
+        /* Added tooltip styling */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+            margin-left: 5px;
+        }
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 240px;
+            background-color: #555;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 8px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.85em;
+        }
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div id="info">
-            <p>Log file: <span id="filename">None</span></p>
-            <p>Current state: <span id="current-state">0</span> of <span id="total-states">0</span></p>
-            <p>s<sub>n</sub>: <span id="s-n-value">0</span></p>
+            <div class="data-group">
+                <p><span class="data-label">Log file:</span> <span id="filename">None</span></p>
+                <p><span class="data-label">Current state:</span> <span id="current-state">0</span> of <span id="total-states">0</span></p>
+            </div>
+            <div class="data-group">
+                <p>
+                    <span class="data-label">s<sub>n</sub>:</span> 
+                    <span id="s-n-value" class="numeric-value">0.000000</span>
+                    <span class="tooltip">ⓘ
+                        <span class="tooltiptext">s<sub>n</sub> = √2 × L / max_inflation</span>
+                    </span>
+                </p>
+                <p><span class="data-label">max_inflation:</span> <span id="max-inflation-value" class="numeric-value">0.000000</span></p>
+            </div>
+            <div class="data-group">
+                <p><span class="data-label">L:</span> <span id="l-value" class="numeric-value">0.000000</span></p>
+                <p><span class="data-label">Squares:</span> <span id="squares-count">0</span></p>
+            </div>
         </div>
         
         <div id="canvas-container">
@@ -127,6 +194,11 @@
                 <input type="range" id="speedSlider" min="1" max="20" value="5">
                 <span id="speedValue" class="value-display">5</span>
             </div>
+            <div id="precision-control" class="slider-container">
+                <label for="precisionSlider">Decimal Precision:</label>
+                <input type="range" id="precisionSlider" min="6" max="15" value="10">
+                <span id="precisionValue" class="value-display">10</span>
+            </div>
         </div>
     </div>
 
@@ -142,18 +214,24 @@
         const resetButton = document.getElementById('reset');
         const stateSlider = document.getElementById('stateSlider');
         const speedSlider = document.getElementById('speedSlider');
+        const precisionSlider = document.getElementById('precisionSlider');
         const stateValueDisplay = document.getElementById('stateValue');
         const speedValueDisplay = document.getElementById('speedValue');
+        const precisionValueDisplay = document.getElementById('precisionValue');
         const fileNameDisplay = document.getElementById('filename');
         const currentStateDisplay = document.getElementById('current-state');
         const totalStatesDisplay = document.getElementById('total-states');
         const sNValueDisplay = document.getElementById('s-n-value');
+        const maxInflationValueDisplay = document.getElementById('max-inflation-value');
+        const lValueDisplay = document.getElementById('l-value');
+        const squaresCountDisplay = document.getElementById('squares-count');
         const canvasContainer = document.getElementById('canvas-container');
 
         let states = [];
         let currentStateIndex = 0;
         let animationId = null;
         let playSpeed = parseInt(speedSlider.value);
+        let decimalPrecision = parseInt(precisionSlider.value);
         let autoZoom = true;
         let isPlaying = false;
 
@@ -183,6 +261,12 @@
         speedSlider.addEventListener('input', function() {
             playSpeed = parseInt(this.value);
             speedValueDisplay.textContent = playSpeed;
+        });
+        precisionSlider.addEventListener('input', function() {
+            decimalPrecision = parseInt(this.value);
+            precisionValueDisplay.textContent = decimalPrecision;
+            // Redraw with new precision
+            drawCurrentState();
         });
 
         // Initial setup
@@ -258,9 +342,14 @@
             const state = states[currentStateIndex];
             currentStateDisplay.textContent = currentStateIndex + 1;
             
-            // Calculate and update s_n = sqrt(2) * L / max_inflation
+            // Calculate and update s_n = sqrt(2) * L / max_inflation with specified precision
             const sn = (Math.sqrt(2) * state.L) / state.max_inflation;
-            sNValueDisplay.textContent = sn.toFixed(6);
+            sNValueDisplay.textContent = sn.toFixed(decimalPrecision);
+            
+            // Update other values with the specified precision
+            maxInflationValueDisplay.textContent = state.max_inflation.toFixed(decimalPrecision);
+            lValueDisplay.textContent = state.L.toFixed(decimalPrecision);
+            squaresCountDisplay.textContent = state.squares.length;
             
             // Calculate optimal zoom level if auto-zoom is enabled
             let zoomLevel = 1;
@@ -312,7 +401,7 @@
                 
                 const halfSize = (squareSize * scale) / 2;
                 
-                // Use light gray for all squares
+                // Use light gray for all squares as before
                 ctx.fillStyle = '#D3D3D3';
                 ctx.fillRect(-halfSize, -halfSize, squareSize * scale, squareSize * scale);
                 
@@ -407,6 +496,12 @@
             // Reset button states
             playButton.disabled = false;
             pauseButton.disabled = true;
+            
+            // Clear displays
+            sNValueDisplay.textContent = "0." + "0".repeat(decimalPrecision);
+            maxInflationValueDisplay.textContent = "0." + "0".repeat(decimalPrecision);
+            lValueDisplay.textContent = "0." + "0".repeat(decimalPrecision);
+            squaresCountDisplay.textContent = "0";
             
             clearCanvas();
             drawInitialMessage();

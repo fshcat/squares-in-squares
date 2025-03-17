@@ -5,12 +5,15 @@
 #include <random>
 #include <array>
 #include <fstream>
+#include <sstream>
 #include <chrono>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
 #include <queue>
 #include <atomic>
+#include <filesystem>
+#include <iomanip>
 #include "thread_pool.h"
 
 using namespace std;
@@ -291,10 +294,13 @@ class Configuration {
         }
 
         // Logs state of the configuration as JSON
-        void log_state(const string& filename)
+        void log_state(const string& filename, int precision = 15)
         {
             ofstream logfile(filename, ios::app);
             if (!logfile.is_open()) return;
+
+            // Set precision for floating point values
+            logfile << fixed << setprecision(precision);
 
             logfile << "{";
             logfile << "\"L\":" << L << ",";
@@ -302,12 +308,116 @@ class Configuration {
             logfile << "\"squares\":[";
             for (int i = 0; i < n; ++i) {
                 logfile << "[" << squares[i][0] << ","
-                    << squares[i][1] << ","
-                    << squares[i][2] << "]"
-                    << (i < n-1 ? "," : "");
+                        << squares[i][1] << ","
+                        << squares[i][2] << "]"
+                        << (i < n-1 ? "," : "");
             }
             logfile << "]}\n";
             logfile.close();
+        }
+
+        static Configuration load_from_logfile(const string& filename)
+        {
+            ifstream logfile(filename);
+            if (!logfile.is_open()) {
+                cerr << "Error: Could not open logfile: " << filename << endl;
+                exit(1);
+            }
+            
+            string last_line;
+            string line;
+            while (getline(logfile, line)) {
+                if (!line.empty()) {
+                    last_line = line;
+                }
+            }
+            logfile.close();
+            
+            if (last_line.empty()) {
+                cerr << "Error: Logfile is empty: " << filename << endl;
+                exit(1);
+            }
+            
+            // Parse the JSON line
+            size_t L_pos = last_line.find("\"L\":");
+            size_t max_inflation_pos = last_line.find("\"max_inflation\":");
+            size_t squares_pos = last_line.find("\"squares\":[");
+            
+            if (L_pos == string::npos || max_inflation_pos == string::npos || squares_pos == string::npos) {
+                cerr << "Error: Invalid JSON format in logfile: " << filename << endl;
+                exit(1);
+            }
+            
+            // Extract L value
+            L_pos += 4; // Move past "\"L\":
+            size_t L_end = last_line.find(",", L_pos);
+            double L = stod(last_line.substr(L_pos, L_end - L_pos));
+            
+            // Extract squares array
+            squares_pos += 11; // Move past "\"squares\":["
+            size_t squares_end = last_line.find("]}", squares_pos);
+            string squares_str = last_line.substr(squares_pos, squares_end - squares_pos);
+            
+            // Count number of squares by counting occurrences of ']'
+            int n = 0;
+            size_t pos = 0;
+            while ((pos = squares_str.find(']', pos)) != string::npos) {
+                n++;
+                pos++;
+            }
+            
+            // Create configuration with correct n and L
+            Configuration config(n, L);
+            
+            // Clear the randomly initialized squares
+            config.squares.clear();
+            config.cos_table.clear();
+            config.sin_table.clear();
+            
+            // Parse each square
+            string::size_type start = 0;
+            for (int i = 0; i < n; i++) {
+                size_t open_bracket = squares_str.find('[', start);
+                size_t close_bracket = squares_str.find(']', open_bracket);
+                
+                if (open_bracket == string::npos || close_bracket == string::npos) {
+                    cerr << "Error: Invalid square format in logfile: " << filename << endl;
+                    exit(1);
+                }
+                
+                string square_str = squares_str.substr(open_bracket + 1, close_bracket - open_bracket - 1);
+                
+                // Parse x, y, theta
+                istringstream ss(square_str);
+                string token;
+                vector<double> values;
+                
+                while (getline(ss, token, ',')) {
+                    values.push_back(stod(token));
+                }
+                
+                if (values.size() != 3) {
+                    cerr << "Error: Invalid square format (expected 3 values): " << square_str << endl;
+                    exit(1);
+                }
+                
+                // Add square to configuration
+                config.squares.push_back({values[0], values[1], values[2]});
+                config.cos_table.push_back(cos(values[2]));
+                config.sin_table.push_back(sin(values[2]));
+                
+                start = close_bracket + 1;
+            }
+            
+            // Add the scratchpad square
+            config.squares.push_back({0.0, 0.0, 0.0});
+            config.cos_table.push_back(1.0);
+            config.sin_table.push_back(0.0);
+            
+            // Recalculate inflations
+            config.update_inflations_full();
+            
+            return config;
         }
 };
 
@@ -316,7 +426,7 @@ void random_walking(Configuration& C, int num_attempts, double epsilon)
     double pos_eps = epsilon*(2*C.L);
     double angle_eps = epsilon*(PI/2);
 
-    for (int k = 0; k < num_attempts; k++)
+    for (int k = 0; k < C.n * num_attempts; k++)
     {
         int i = k % C.n;
 
@@ -392,7 +502,6 @@ void perturbation(Configuration& C, double epsilon)
     }
 
     C.update_inflations_full();
-    C.update_max_inflation();
 }
 
 void perturb_and_billiards(Configuration& C, double eps_init, double eps_min, double eps_max, double factor, int num_attempts, string logfile)
@@ -407,7 +516,7 @@ void perturb_and_billiards(Configuration& C, double eps_init, double eps_min, do
         Configuration C_copy(C);
 
         perturbation(C_copy, epsilon);
-        billiard_of_squares(C_copy, epsilon, epsilon/factor, eps_max, num_attempts, "");
+        billiard_of_squares(C_copy, epsilon, max(epsilon/factor, eps_min), eps_max, num_attempts, "");
 
         if (C_copy.max_inflation > C.max_inflation) {
             C = C_copy;
@@ -421,19 +530,186 @@ void perturb_and_billiards(Configuration& C, double eps_init, double eps_min, do
     }
 }
 
+struct RunInfo {
+    int run_id;
+    double max_inflation;
+    string logfile;
+
+    RunInfo() : run_id(-1), max_inflation(0.0), logfile("") {}
+    
+    RunInfo(int id, double infl, const string& file) 
+        : run_id(id), max_inflation(infl), logfile(file) {}
+    
+    // For sorting by max_inflation (descending)
+    bool operator<(const RunInfo& other) const {
+        return max_inflation > other.max_inflation;
+    }
+};
+
+// Structure to track the best configurations
+struct RunTracker {
+    
+    vector<RunInfo> best_runs;
+    int top_k;
+    
+    RunTracker(int k = 10) : top_k(k) {}
+    
+    void add_run(int run_id, double max_inflation, const string& logfile) {
+        best_runs.emplace_back(RunInfo(run_id, max_inflation, logfile));
+        
+        // Keep only the top_k best runs
+        if (best_runs.size() > top_k) {
+            sort(best_runs.begin(), best_runs.end());
+            best_runs.resize(top_k);
+        }
+    }
+    
+    void print_best_runs() {
+        sort(best_runs.begin(), best_runs.end());
+        cout << "\n===== TOP " << best_runs.size() << " RUNS BY MAX INFLATION =====\n";
+        for (size_t i = 0; i < best_runs.size(); i++) {
+            cout << (i+1) << ". Run " << best_runs[i].run_id 
+                 << ": max_inflation = " << best_runs[i].max_inflation 
+                 << " (logfile: " << best_runs[i].logfile << ")\n";
+        }
+        cout << "=========================================\n\n";
+    }
+    
+    void save_report(const string& filename) {
+        ofstream report(filename);
+        if (!report.is_open()) {
+            cerr << "Error: Could not open report file: " << filename << endl;
+            return;
+        }
+        
+        sort(best_runs.begin(), best_runs.end());
+        report << "# Top " << best_runs.size() << " Runs by Max Inflation\n\n";
+        report << "| Rank | Run ID | Max Inflation | Logfile |\n";
+        report << "|------|--------|---------------|--------|\n";
+        
+        for (size_t i = 0; i < best_runs.size(); i++) {
+            report << "| " << (i+1) << " | " << best_runs[i].run_id 
+                   << " | " << best_runs[i].max_inflation 
+                   << " | " << best_runs[i].logfile << " |\n";
+        }
+        
+        report.close();
+        cout << "Report saved to " << filename << endl;
+    }
+    
+    // Get the best run's logfile
+    string get_best_logfile() {
+        if (best_runs.empty()) return "";
+        sort(best_runs.begin(), best_runs.end());
+        return best_runs[0].logfile;
+    }
+};
+
+void preliminary_billiards(int n, int num_runs, int top_k) {
+    // Create output directory for log files
+    string log_dir = "billiard_logs_" + to_string(n);
+    std::filesystem::create_directory(log_dir);
+    
+    // Tracker for best runs
+    RunTracker tracker(top_k);
+    
+    // Create a report directory
+    string report_dir = "inflation_reports";
+    std::filesystem::create_directory(report_dir);
+    
+    for (int run = 0; run < num_runs; run++) {
+        // Create a unique log file for this run
+        string logfile = log_dir + "/billiard_run_" + to_string(run) + ".log";
+        ofstream(logfile, ios::trunc).close(); // clear file
+        
+        // Run billiard_of_squares with a fresh configuration
+        Configuration current_config(n, 1.0);
+        billiard_of_squares(current_config, 0.5, 1e-8, 1.0, 10, logfile);
+        
+        cout << "Run " << run << ": Completed with max_inflation: " 
+             << current_config.max_inflation << endl;
+             
+        tracker.add_run(run, current_config.max_inflation, logfile);
+        
+        // Every 20 runs, print a report of the best runs
+        if ((run + 1) % 20 == 0 || run == num_runs - 1)
+            tracker.print_best_runs();
+    }
+    
+    cout << "\n===== OPTIMIZATION COMPLETE =====\n";
+    tracker.print_best_runs();
+    
+    // Save final report
+    string final_report = report_dir + "/final_report_" + to_string(n) + ".md";
+    tracker.save_report(final_report);
+    cout << "Final report saved to: " << final_report << endl;
+}
+
+void fine_tune_perturb(const string& logfile, int num_iterations, double factor) {
+    // Create output directory for fine-tuned configurations
+    string fine_tune_dir = "fine_tuned_configs";
+    std::filesystem::create_directory(fine_tune_dir);
+    
+    cout << "Loading configuration from: " << logfile << endl;
+    Configuration config = Configuration::load_from_logfile(logfile);
+    cout << "Loaded configuration with max_inflation: " << config.max_inflation << endl;
+    
+    // Extract configuration details for output filename
+    int n = config.n;
+    double initial_inflation = config.max_inflation;
+    
+    // Create output logfile name based on input file and timestamp
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+    string timestamp = to_string(time);
+    
+    string base_filename = logfile.substr(logfile.find_last_of("/\\") + 1);
+    string output_file = fine_tune_dir + "/fine_tuned_" + base_filename + "_" + timestamp + ".log";
+    ofstream(output_file, ios::trunc).close(); // clear file
+    
+    cout << "Starting fine-tuning with perturbation..." << endl;
+    cout << "Initial max_inflation: " << config.max_inflation << endl;
+    
+    // Run perturb_and_billiards to fine-tune the configuration
+    perturb_and_billiards(config, 0.5, 1e-12, 1.0, factor, num_iterations, output_file);
+    
+    cout << "Fine-tuning complete!" << endl;
+    cout << "Final max_inflation: " << config.max_inflation << endl;
+    cout << "Improvement: " << (config.max_inflation - initial_inflation) << endl;
+    cout << "Results saved to: " << output_file << endl;
+}
+
 int main(int argc, char* argv[])
 {
-    int n = stoi(argv[1]); 
-    double factor = stod(argv[2]);
-    string logfile = argv[3];
-    ofstream(logfile, ios::trunc).close(); // clear file
+    if (argc < 2) {
+        cerr << "Usage:" << endl;
+        cerr << "  Preliminary search: " << argv[0] << " <num_squares> [num_runs=1000] [top_k=10]" << endl;
+        cerr << "  Fine-tuning: " << argv[0] << " --tune <logfile> [num_iterations=10] [factor=1.5]" << endl;
+        return 1;
+    }
 
-    double L = 1.0;
-    Configuration init(n, L);
-    init.log_state(logfile);
-
-    billiard_of_squares(init, 0.5, 1e-8, 1.0, 1000, logfile);
-    perturb_and_billiards(init, 0.5, 1e-12, 1.0, factor, 1000, logfile);
+    string first_arg = argv[1];
+    if (first_arg == "--tune" || first_arg == "-t") {
+        if (argc < 3) {
+            cerr << "Error: Fine-tuning mode requires a logfile" << endl;
+            cerr << "Usage: " << argv[0] << " --tune <logfile> [num_iterations=10] [factor=1.5]" << endl;
+            return 1;
+        }
+        
+        string logfile = argv[2];
+        int num_iterations = (argc > 3) ? stoi(argv[3]) : 10;
+        double factor = (argc > 4) ? stod(argv[4]) : 1.5;
+        
+        fine_tune_perturb(logfile, num_iterations, factor);
+    }
+    else {
+        int n = stoi(argv[1]);
+        
+        int num_runs = (argc > 2) ? stoi(argv[2]) : 1000;
+        int top_k = (argc > 3) ? stoi(argv[3]) : 10;
+        
+        preliminary_billiards(n, num_runs, top_k);
+    }
 
     return 0;
 }
