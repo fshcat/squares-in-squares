@@ -1,111 +1,186 @@
 #pragma once
-#ifndef THREADPOOL_H
-#define THREADPOOL_H
 
 #include <vector>
+#include <queue>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <queue>
-#include <functional>
 #include <future>
-#include <atomic>
-#include <iostream>
+#include <functional>
+#include <stdexcept>
+#include <algorithm>
 
+/**
+ * Simple ThreadPool that:
+ *  - Spawns 'threads' worker threads upon construction.
+ *  - Exposes an 'enqueue' method to add tasks.
+ *  - Waits on all workers to finish when destructed.
+ *
+ * Also has a 'parallel_for' convenience function to parallelize a for-loop
+ * in the range [start, end).
+ */
 class ThreadPool {
-private:
-    std::vector<std::thread> workers_;
-    std::queue<std::function<void()>> tasks_;
-
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    bool stop_;
-
 public:
-    // Constructor: spawn N worker threads
-    explicit ThreadPool(size_t numThreads) : stop_(false) {
-        workers_.reserve(numThreads);
-        for (size_t i = 0; i < numThreads; i++) {
-            workers_.emplace_back([this] {
-                while (true) {
-                    std::function<void()> task;
-                    {
-                        // Wait until we have a task or we are stopping
-                        std::unique_lock<std::mutex> lock(mutex_);
-                        cv_.wait(lock, [this] {
-                            return stop_ || !tasks_.empty();
-                        });
+    // Create a thread pool with 'threads' worker threads
+    explicit ThreadPool(size_t threads);
 
-                        if (stop_ && tasks_.empty()) 
-                            return;  // all done
+    // Enqueue any callable, returns a std::future<result_type>
+    template<class F, class... Args>
+    auto enqueue(F&& f, Args&&... args)
+        -> std::future<typename std::invoke_result<F, Args...>::type>;
 
-                        // Pop the next task
-                        task = std::move(tasks_.front());
-                        tasks_.pop();
-                    }
-                    // Run the task outside the lock
-                    task();
-                }
-            });
-        }
-    }
+    // Simple parallel_for that splits the loop among the available threads
+    void parallel_for(int start, int end, const std::function<void(int)>& func);
 
-    // Destructor: join all threads
-    ~ThreadPool() {
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            stop_ = true;
-        }
-        cv_.notify_all();
-        for (auto &w : workers_) {
-            w.join();
-        }
-    }
+    // Destructor joins all threads
+    ~ThreadPool();
 
-    // Enqueue a single function to run, return immediately 
-    void enqueue(std::function<void()> f) {
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            tasks_.push(std::move(f));
-        }
-        cv_.notify_one();  
-    }
+    // Optional: how many workers in this pool?
+    inline size_t size() const { return workers.size(); }
 
-    // Run func(i) for i in [start, end) and block until all calls to func() have completed.
-    template <typename F>
-    void parallel_for(int start, int end, F func) {
-        if (start >= end) return;
+private:
+    // Keep track of worker threads
+    std::vector<std::thread> workers;
 
-        // Launch one loop per worker, with an index keeping track of the current task for each worker
-        const size_t num_workers = workers_.size();
-        auto current_index = std::make_shared<std::atomic<int>>(start);
+    // Task queue
+    std::queue<std::function<void()>> tasks;
 
-        // A promise/future pair to know when all tasks have finished
-        auto barrier = std::make_shared<std::promise<void>>();
-        auto barrier_future = barrier->get_future();
-
-        // How many tasks remain to finish before we can set the barrier
-        auto active_count = std::make_shared<std::atomic<size_t>>(num_workers);
-
-        // Each task runs in a worker thread until all indices in [start, end) are done
-        auto loopBody = [=]() {
-            while (true) {
-                int i = current_index->fetch_add(1);
-                if (i >= end) break;
-                func(i);
-            }
-
-            if (active_count->fetch_sub(1) == 1)
-                barrier->set_value();
-        };
-
-        // Dispatch worker loops
-        for (size_t w = 0; w < num_workers; w++)
-            enqueue(loopBody);
-
-        // Block until the last worker sets the promise
-        barrier_future.wait();
-    }
+    // Synchronization
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop;
 };
 
-#endif // THREADPOOL_H
+
+// ------------------ Implementation ------------------
+
+// Constructor: launch the requested number of workers
+inline ThreadPool::ThreadPool(size_t threads)
+    : stop(false)
+{
+    if (threads == 0) {
+        throw std::runtime_error("ThreadPool: number of threads cannot be zero.");
+    }
+
+    for(size_t i = 0; i < threads; ++i)
+    {
+        workers.emplace_back(
+            [this]
+            {
+                for(;;)
+                {
+                    std::function<void()> task;
+                    {   // acquire lock
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        // wait on condition until either:
+                        //   1) there's a new task, or
+                        //   2) we're stopping
+                        this->condition.wait(lock, [this] {
+                            return this->stop || !this->tasks.empty();
+                        });
+
+                        // If no tasks and we're stopping, break out
+                        if(this->stop && this->tasks.empty())
+                            return;
+
+                        // Pop the next task
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+                    // Run the task
+                    task();
+                }
+            }
+        );
+    }
+}
+
+// Enqueue a new task and return its future result
+template<class F, class... Args>
+auto ThreadPool::enqueue(F&& f, Args&&... args)
+    -> std::future<typename std::invoke_result<F, Args...>::type>
+{
+    using return_type = typename std::invoke_result<F, Args...>::type;
+
+    // Package the callable into a shared task
+    auto task = std::make_shared<std::packaged_task<return_type()>>(
+        std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+    );
+
+    std::future<return_type> res = task->get_future();
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+
+        if (stop)
+            throw std::runtime_error("enqueue on stopped ThreadPool");
+
+        tasks.emplace([task](){ (*task)(); });
+    }
+    condition.notify_one(); // wake up one worker
+
+    return res;
+}
+
+// parallel_for: distribute the loop [start, end) among the worker threads
+inline void ThreadPool::parallel_for(int start, int end, const std::function<void(int)>& func)
+{
+    int length = end - start;
+    if (length <= 0) return;
+
+    // If we have no workers, just do it in the current thread
+    size_t num_workers = workers.size();
+    if (num_workers == 0)
+    {
+        for (int i = start; i < end; i++)
+            func(i);
+        return;
+    }
+
+    // Determine chunk size
+    int chunk_size = (length + static_cast<int>(num_workers) - 1) / static_cast<int>(num_workers);
+    std::vector<std::future<void>> futures;
+    futures.reserve(num_workers);
+
+    // Assign each chunk as one task
+    int current = start;
+    for (size_t t = 0; t < num_workers; t++)
+    {
+        int chunk_start = current;
+        int chunk_end   = std::min(end, chunk_start + chunk_size);
+        current = chunk_end;
+
+        if (chunk_start >= end)
+            break;
+
+        // Enqueue this chunk
+        futures.push_back(
+            enqueue([chunk_start, chunk_end, &func]() {
+                for (int i = chunk_start; i < chunk_end; i++) {
+                    func(i);
+                }
+            })
+        );
+    }
+
+    // Wait for all chunks to complete
+    for (auto &f : futures) {
+        f.get();
+    }
+}
+
+// Destructor: signal all workers to stop, then join them
+inline ThreadPool::~ThreadPool()
+{
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        stop = true;
+    }
+    condition.notify_all(); // wake all threads
+    for (std::thread &worker : workers) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+}
+
+
